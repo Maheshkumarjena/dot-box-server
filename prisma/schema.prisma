@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  username  String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  games     GamePlayer[]
+  wonGames  Game[]     @relation("GameWinner") // Add this line
+}
+
+model Game {
+  id          String      @id @default(uuid())
+  code        String      @unique
+  gridSize    Int
+  status      GameStatus  @default(ACTIVE)
+  winnerId    String?
+  winner      User?       @relation("GameWinner", fields: [winnerId], references: [id]) // Update this line
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  players     GamePlayer[]
+}
+model GamePlayer {
+  id        String   @id @default(uuid())
+  game      Game     @relation(fields: [gameId], references: [id])
+  gameId    String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  score     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([gameId, userId])
+}
+
+enum GameStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
