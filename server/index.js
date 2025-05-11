@@ -10,7 +10,7 @@ const app = express()
 const server = http.createServer(app)
 const io = socketio(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'https://dot-box-ui.vercel.app/' ,
+    origin: process.env.FRONTEND_URL || 'https://dot-box-ui.vercel.app' ,
     methods: ['GET', 'POST'],
   },
 })
