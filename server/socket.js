@@ -156,10 +156,11 @@ const checkGameEnd = (gameState) => {
 
 // Handle socket connections
 const handleSocketConnection = (socket, io, prisma) => {
-  console.log(`New connection: ${socket.id}`)
+  console.log(`New connection: ============================================================================================================================================> ${socket.id}`)
 
   // Create a new game
   socket.on('createGame', async ({ gridSize, userId, username }) => {
+    console.log(`[createGame] =====================================================================================> Received createGame request: gridSize=${gridSize}, userId=${userId}, username=${username}`)
     try {
       // Check if the user exists
       let user = await prisma.user.findUnique({ where: { id: userId } })
@@ -215,97 +216,103 @@ const handleSocketConnection = (socket, io, prisma) => {
   })
 
   // Join an existing game
-  socket.on('joinGame', async ({ code, userId }) => {
-  console.log(`[joinGame] Received joinGame request for code: ${code}, userId: ${userId}`);
-  try {
-    // Find the game in the database
-    console.log(`[joinGame] Finding game in database with code: ${code}`);
-    const game = await prisma.game.findUnique({
-      where: { code },
-      include: {
-        players: {
+  socket.on('joinGame', async ({ code, userId, username }) => {
+    console.log(`[joinGame]=====================================================================================> Received joinGame request for code: ${code}, userId: ${userId} , username: ${username}`);
+    try {
+      // Find the game in the database
+      console.log(`[joinGame] Finding game in database with code: ${code}`);
+      const game = await prisma.game.findUnique({
+        where: { code },
+        include: {
+          players: {
+            include: {
+              user: true,
+            },
+          },
+        },
+      });
+
+      if (!game) {
+        console.log(`[joinGame] Game not found with code: ${code}`);
+        return socket.emit('error', { message: 'Game not found' });
+      }
+      console.log(`[joinGame] Found game: ${JSON.stringify(game)}`);
+
+      if (game.status !== 'ACTIVE') {
+        console.log(`[joinGame] Game is not active. Status: ${game.status}`);
+        return socket.emit('error', { message: 'Game is not active' });
+      }
+      console.log(`[joinGame] Game is active`);
+
+      // Check if player is already in the game
+      const existingPlayer = game.players.find(p => p.userId === userId);
+      let player = existingPlayer;
+      console.log(`[joinGame] Existing player: ${JSON.stringify(existingPlayer)}`);
+
+      // If not, add them to the game
+      if (!existingPlayer) {
+        console.log(`[joinGame] Player not found in game, creating new player`);
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) {
+          console.log(`[joinGame] User not found, creating user with id: ${userId} and username: ${username}`);
+          const name = username; // Generate a default username
+          const user = await prisma.user.create({
+            data: {
+              id: userId, // Use the provided userId
+              username: name, // Pass the username value
+            },
+          });
+          console.log(`[joinGame] Created user: ${JSON.stringify(user)}`);
+        }
+
+
+
+        player = await prisma.gamePlayer.create({
+          data: {
+            gameId: game.id,
+            userId,
+            score: 0,
+          },
           include: {
             user: true,
           },
-        },
-      },
-    });
+        });
+        console.log(`[joinGame] Created new player: ${JSON.stringify(player)}`);
 
-    if (!game) {
-      console.log(`[joinGame] Game not found with code: ${code}`);
-      return socket.emit('error', { message: 'Game not found' });
-    }
-    console.log(`[joinGame] Found game: ${JSON.stringify(game)}`);
-
-    if (game.status !== 'ACTIVE') {
-      console.log(`[joinGame] Game is not active. Status: ${game.status}`);
-      return socket.emit('error', { message: 'Game is not active' });
-    }
-    console.log(`[joinGame] Game is active`);
-
-    // Check if player is already in the game
-    const existingPlayer = game.players.find(p => p.userId === userId);
-    let player = existingPlayer;
-    console.log(`[joinGame] Existing player: ${JSON.stringify(existingPlayer)}`);
-
-    // If not, add them to the game
-    if (!existingPlayer) {
-      console.log(`[joinGame] Player not found in game, creating new player`);
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-       if (!user) {
-        console.log(`[joinGame] User not found, creating user with id: ${userId}`);
-         const username = `User_${userId.slice(0, 8)}`; // Generate a default username
-         user = await prisma.user.create({ data: { id: userId, username } });
-         console.log(`[joinGame] Created user: ${JSON.stringify(user)}`);
-       }
-
-
-      player = await prisma.gamePlayer.create({
-        data: {
-          gameId: game.id,
-          userId,
-          score: 0,
-        },
-        include: {
-          user: true,
-        },
-      });
-      console.log(`[joinGame] Created new player: ${JSON.stringify(player)}`);
-
-      // Update the in-memory game state
-      if (activeGames[code]) {
-        activeGames[code].players.push(player);
-        console.log(`[joinGame] Updated activeGames[${code}]: ${JSON.stringify(activeGames[code])}`);
+        // Update the in-memory game state
+        if (activeGames[code]) {
+          activeGames[code].players.push(player);
+          console.log(`[joinGame] Updated activeGames[${code}]: ${JSON.stringify(activeGames[code])}`);
+        } else {
+          console.log(`[joinGame] activeGames[${code}] is undefined.  Current activeGames: ${JSON.stringify(activeGames)}`);
+        }
       } else {
-        console.log(`[joinGame] activeGames[${code}] is undefined.  Current activeGames: ${JSON.stringify(activeGames)}`);
+        console.log(`[joinGame] Player already exists in the game: ${JSON.stringify(player)}`);
       }
-    }  else {
-      console.log(`[joinGame] Player already exists in the game: ${JSON.stringify(player)}`);
+
+      // Join the game room
+      socket.join(code);
+      console.log(`[joinGame] Socket joined room: ${code}`);
+
+      // Send the initial game state to the joining player
+      const gameStateToSend = activeGames[code] || initializeGameState(game.gridSize, game.players, game.id, code);
+      socket.emit('gameJoined', {
+        gameState: gameStateToSend,
+        player,
+      });
+      console.log(`[joinGame] Emitted 'gameJoined' event: ${JSON.stringify({ gameState: gameStateToSend, player })}`);
+
+      // Notify other players in the game
+      socket.to(code).emit('playerJoined', {
+        player,
+        gameState: activeGames[code],
+      });
+      console.log(`[joinGame] Emitted 'playerJoined' event to room ${code}: ${JSON.stringify({ player, gameState: activeGames[code] })}`);
+    } catch (error) {
+      console.error('[joinGame] Error joining game:', error);
+      socket.emit('error', { message: 'Failed to join game' });
     }
-
-    // Join the game room
-    socket.join(code);
-    console.log(`[joinGame] Socket joined room: ${code}`);
-
-    // Send the initial game state to the joining player
-     const gameStateToSend = activeGames[code] || initializeGameState(game.gridSize, game.players, game.id, code);
-    socket.emit('gameJoined', {
-      gameState: gameStateToSend,
-      player,
-    });
-    console.log(`[joinGame] Emitted 'gameJoined' event: ${JSON.stringify({gameState: gameStateToSend, player})}`);
-
-    // Notify other players in the game
-    socket.to(code).emit('playerJoined', {
-      player,
-      gameState: activeGames[code],
-    });
-    console.log(`[joinGame] Emitted 'playerJoined' event to room ${code}: ${JSON.stringify({player, gameState: activeGames[code]})}`);
-  } catch (error) {
-    console.error('[joinGame] Error joining game:', error);
-    socket.emit('error', { message: 'Failed to join game' });
-  }
-});
+  });
 
 
   // Make a move in the game
