@@ -1,4 +1,3 @@
-
 // In-memory store for active games
 const activeGames = {}
 
@@ -38,18 +37,17 @@ const initializeGameState = (gridSize, players, gameId, code) => {
     }
   }
 
+  // Initialize players with scores
+  const playersWithScores = players.map(p => ({ ...p, score: 0 }))
+
   return {
     gridSize,
-    players,
+    players: playersWithScores,
     gameId,
     code,
     lines,
     boxes,
     currentPlayerIndex: 0,
-    scores: players.reduce((acc, player) => {
-      acc[player.userId] = 0
-      return acc
-    }, {}),
     createdAt: new Date().toISOString(),
   }
 }
@@ -111,9 +109,12 @@ const processMove = (gameState, lineId, playerId) => {
     }
   }
 
-  // Update scores and turn if no boxes were completed
+  // Update player score if boxes were completed
   if (boxesCompleted > 0) {
-    gameState.scores[playerId] += boxesCompleted
+    const playerIndex = gameState.players.findIndex(p => p.userId === playerId)
+    if (playerIndex !== -1) {
+      gameState.players[playerIndex].score += boxesCompleted
+    }
   } else {
     gameState.currentPlayerIndex = (currentPlayerIndex + 1) % players.length
   }
@@ -123,7 +124,7 @@ const processMove = (gameState, lineId, playerId) => {
 
 // Check if a box is completed and update it if so
 const checkBoxCompletion = (gameState, boxId, playerId) => {
-  const { boxes, lines, gridSize } = gameState
+  const { boxes, lines } = gameState
   const box = boxes[boxId]
   if (box.owner) return false // Already claimed
 
@@ -155,16 +156,14 @@ const checkGameEnd = (gameState) => {
 
 // Handle socket connections
 const handleSocketConnection = (socket, io, prisma) => {
-  console.log(`New connection: ============================================================================================================================================> ${socket.id}`)
+  console.log(`New connection: ${socket.id}`)
 
   // Create a new game
   socket.on('createGame', async ({ gridSize, userId, username }) => {
-    console.log(`[createGame] =====================================================================================> Received createGame request: gridSize=${gridSize}, userId=${userId}, username=${username}`)
     try {
       // Check if the user exists
       let user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
-        // Create the user if they don't exist
         user = await prisma.user.create({ data: { id: userId, username } })
       }
 
@@ -216,10 +215,8 @@ const handleSocketConnection = (socket, io, prisma) => {
 
   // Join an existing game
   socket.on('joinGame', async ({ code, userId, username }) => {
-    console.log(`[joinGame]=====================================================================================> Received joinGame request for code: ${code}, userId: ${userId} , username: ${username}`);
     try {
       // Find the game in the database
-      console.log(`[joinGame] Finding game in database with code: ${code}`);
       const game = await prisma.game.findUnique({
         where: { code },
         include: {
@@ -229,42 +226,31 @@ const handleSocketConnection = (socket, io, prisma) => {
             },
           },
         },
-      });
+      })
 
       if (!game) {
-        console.log(`[joinGame] Game not found with code: ${code}`);
-        return socket.emit('error', { message: 'Game not found' });
+        return socket.emit('error', { message: 'Game not found' })
       }
-      console.log(`[joinGame] Found game: ${JSON.stringify(game)}`);
 
       if (game.status !== 'ACTIVE') {
-        console.log(`[joinGame] Game is not active. Status: ${game.status}`);
-        return socket.emit('error', { message: 'Game is not active' });
+        return socket.emit('error', { message: 'Game is not active' })
       }
-      console.log(`[joinGame] Game is active`);
 
       // Check if player is already in the game
-      const existingPlayer = game.players.find(p => p.userId === userId);
-      let player = existingPlayer;
-      console.log(`[joinGame] Existing player: ${JSON.stringify(existingPlayer)}`);
+      const existingPlayer = game.players.find(p => p.userId === userId)
+      let player = existingPlayer
 
       // If not, add them to the game
       if (!existingPlayer) {
-        console.log(`[joinGame] Player not found in game, creating new player`);
-        const user = await prisma.user.findUnique({ where: { id: userId } });
+        let user = await prisma.user.findUnique({ where: { id: userId } })
         if (!user) {
-          console.log(`[joinGame] User not found, creating user with id: ${userId} and username: ${username}`);
-          const name = username; // Generate a default username
-          const user = await prisma.user.create({
+          user = await prisma.user.create({
             data: {
-              id: userId, // Use the provided userId
-              username: name, // Pass the username value
+              id: userId,
+              username: username || `Player${game.players.length + 1}`,
             },
-          });
-          console.log(`[joinGame] Created user: ${JSON.stringify(user)}`);
+          })
         }
-
-
 
         player = await prisma.gamePlayer.create({
           data: {
@@ -275,108 +261,84 @@ const handleSocketConnection = (socket, io, prisma) => {
           include: {
             user: true,
           },
-        });
-        console.log(`[joinGame] Created new player: ${JSON.stringify(player)}`);
+        })
 
         // Update the in-memory game state
         if (activeGames[code]) {
-          activeGames[code].players.push(player);
-          console.log(`[joinGame] Updated activeGames[${code}]: ${JSON.stringify(activeGames[code])}`);
-        } else {
-          console.log(`[joinGame] activeGames[${code}] is undefined.  Current activeGames: ${JSON.stringify(activeGames)}`);
+          activeGames[code].players.push(player)
         }
-      } else {
-        console.log(`[joinGame] Player already exists in the game: ${JSON.stringify(player)}`);
       }
 
       // Join the game room
-      socket.join(code);
-      console.log(`[joinGame] Socket joined room: ${code}`);
+      socket.join(code)
 
       // Send the initial game state to the joining player
-      const gameStateToSend = activeGames[code] || initializeGameState(game.gridSize, game.players, game.id, code);
+      const gameStateToSend = activeGames[code] || initializeGameState(game.gridSize, game.players, game.id, code)
       socket.emit('gameJoined', {
         gameState: gameStateToSend,
         player,
-      });
-      console.log(`[joinGame] Emitted 'gameJoined' event: ${JSON.stringify({ gameState: gameStateToSend, player })}`);
+      })
 
       // Notify other players in the game
       socket.to(code).emit('playerJoined', {
         player,
         gameState: activeGames[code],
-      });
-      console.log(`[joinGame] Emitted 'playerJoined' event to room ${code}: ${JSON.stringify({ player, gameState: activeGames[code] })}`);
+      })
     } catch (error) {
-      console.error('[joinGame] Error joining game:', error);
-      socket.emit('error', { message: 'Failed to join game' });
+      console.error('Error joining game:', error)
+      socket.emit('error', { message: 'Failed to join game' })
     }
-  });
-
+  })
 
   // Make a move in the game
   socket.on('makeMove', ({ code, line, userId }) => {
-    const gameState = activeGames[code]
-    if (!gameState) {
-      return socket.emit('error', { message: 'Game not found' })
-    }
+  const gameState = activeGames[code]
+  if (!gameState) {
+    return socket.emit('error', { message: 'Game not found' })
+  }
 
-    const result = processMove(gameState, line, userId)
-    if (!result.valid) {
-      return socket.emit('invalidMove', { message: result.message })
-    }
+  const result = processMove(gameState, line, userId)
+  if (!result.valid) {
+    return socket.emit('invalidMove', { message: result.message })
+  }
 
-    // Check if the game has ended
-    const gameEnded = checkGameEnd(gameState)
+  // Check if the game has ended
+  const gameEnded = checkGameEnd(gameState)
 
-    if (gameEnded) {
-      // Determine the winner
-      let winnerId = null
-      let maxScore = -1
-      let isTie = false
+  // Broadcast the updated game state to all players
+  io.to(code).emit('gameStateUpdated', { gameState })
 
-      for (const [playerId, score] of Object.entries(gameState.scores)) {
-        if (score > maxScore) {
-          maxScore = score
-          winnerId = playerId
-          isTie = false
-        } else if (score === maxScore) {
-          isTie = true
-        }
+  if (gameEnded) {
+    // Notify that game has completed (frontend will calculate winner)
+    io.to(code).emit('gameCompleted', { 
+      finalState: gameState,
+      // Optional: include completion timestamp
+      completedAt: new Date().toISOString() 
+    })
+
+    // Update database but keep in activeGames for a while
+    prisma.game.update({
+      where: { code },
+      data: { status: 'COMPLETED' }
+    }).catch(console.error)
+
+    // Schedule cleanup after delay (e.g., 30 seconds)
+    setTimeout(() => {
+      if (activeGames[code]) {
+        delete activeGames[code]
+        console.log(`Cleaned up game ${code}`)
       }
-
-      // Update the game in the database
-      prisma.game.update({
-        where: { code },
-        data: {
-          status: 'COMPLETED',
-          winnerId: isTie ? null : winnerId,
-        },
-      }).catch(console.error)
-
-      // Notify all players
-      io.to(code).emit('gameEnded', {
-        winnerId: isTie ? null : winnerId,
-        isTie,
-        finalScores: gameState.scores,
-      })
-
-      // Remove the game from active games
-      delete activeGames[code]
-    } else {
-      // Broadcast the updated game state to all players
-      io.to(code).emit('gameStateUpdated', { gameState })
-
-      // Notify whose turn it is
-      const currentPlayer = gameState.players[gameState.currentPlayerIndex]
-      io.to(code).emit('nextPlayer', { playerId: currentPlayer.userId })
-    }
-  })
+    }, 30000)
+  } else {
+    // Normal move - notify next player
+    const currentPlayer = gameState.players[gameState.currentPlayerIndex]
+    io.to(code).emit('nextPlayer', { playerId: currentPlayer.userId })
+  }
+})
 
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`)
-    // TODO: Handle player disconnection (mark as inactive, etc.)
   })
 }
 
