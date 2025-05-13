@@ -1,4 +1,3 @@
-const { v4: uuidv4 } = require('uuid')
 
 // In-memory store for active games
 const activeGames = {}
